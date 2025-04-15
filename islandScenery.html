@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Island Scene</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            background-color: rgba(0,0,0,0.5);
+            padding: 5px;
+            z-index: 100;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            background-color: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 101; /* Ensure it's above #info */
+            display: none; /* Hidden by default */
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        Island Scene | Double tap/click to start
+    </div>
+    <div id="loading">Loading Assets...</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js'; // For potential HDR skyboxes
+
+        let scene, camera, renderer, controls;
+        let clock, mixer; // For animations
+        let water, sunLight, pointLight;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        const objects = []; // For collision detection 
+        let boatGroup; // Group to control boat movement and rocking
+
+        const loadingManager = new THREE.LoadingManager();
+        const gltfLoader = new GLTFLoader(loadingManager);
+        const textureLoader = new THREE.TextureLoader(loadingManager);
+        const cubeTextureLoader = new THREE.CubeTextureLoader(loadingManager);
+        const rgbeLoader = new RGBELoader(loadingManager); // If using HDR
+
+        const loadingElement = document.getElementById('loading');
+        const infoElement = document.getElementById('info');
+
+        // --- Configuration ---
+        const waterLevel = 0.5;
+        const islandSize = 50;
+        const playerHeight = 1.8;
+        const boatInitialPosition = new THREE.Vector3(islandSize * 0.3, waterLevel - 0.1, islandSize * 0.4);
+        const boatMovementRange = islandSize * 0.5; // How far the boat moves back and forth
+
+        // --- Asset URLs (PLACEHOLDERS - Replace with actual URLs) ---
+        // Find free assets (check licenses!) on sites like:
+        // Sketchfab: https://sketchfab.com/
+        // Poly Haven: https://polyhaven.com/models
+        // Quaternius: https://quaternius.com/
+        // Kenney: https://kenney.nl/assets
+
+       
+        // const boatModelURL = 'https://placehold.co/1x1/8B4513/ffffff?text=+'; //  actual boat model URL
+        // const treeModelURL = 'https://placehold.co/1x1/228B22/ffffff?text=+'; // actual tree model URL 
+        // const houseModelURL = 'https://placehold.co/1x1/AAAAAA/ffffff?text=+'; // actual house model URL 
+
+ // Models (.gltf/.glb format recommended) - Added 
+ 
+// const boatModelURL = 'https://github.com/Dismas-Ospaltic/GLB/raw/refs/heads/main/boat.glb';
+// const treeModelURL = 'https://raw.githubusercontent.com/Dismas-Ospaltic/GLB/blob/main/boat.glb';
+// const houseModelURL = 'https://raw.githubusercontent.com/Dismas-Ospaltic/GLB/blob/main/boat.glb';
+
+const boatModelURL = 'https://raw.githubusercontent.com/Dismas-Ospaltic/GLB/blob/main/boat.glb';
+const treeModelURL = 'https://raw.githubusercontent.com/Dismas-Ospaltic/GLB/blob/main/maple_tree.glb';
+const houseModelURL = 'https://raw.githubusercontent.com/Dismas-Ospaltic/GLB/blob/main/city.glb';
+
+
+        // Textures - Added 
+        const sandTextureURL = 'https://dl.polyhaven.org/file/ph-assets/Textures/jpg/4k/sandy_gravel_02/sandy_gravel_02_rough_4k.jpg'; //  sand texture URL
+        const grassTextureURL = 'https://placehold.co/512x512/8fbc8f/000000?text=+'; // actual grass texture URL 
+        const rockTextureURL = 'https://dl.polyhaven.org/file/ph-assets/Textures/jpg/4k/aerial_rocks_02/aerial_rocks_02_diff_4k.jpg'; //  rock texture URL
+        const woodTextureURL = 'https://placehold.co/512x512/8b4513/000000?text=+'; //  wood texture URL
+        const waterNormalTextureURL = 'https://placehold.co/512x512/add8e6/000000?text=+'; //  water normal map URL
+
+        // Skybox (Cube Texture) - Ensure 6 images: px, nx, py, ny, pz, nz - Added ?text=+ to remove default text
+        const skyboxTextureURLs = [
+  'https://placehold.co/1024x1024/87ceeb/87ceeb?text=', // Right (Positive X)
+  'https://placehold.co/1024x1024/87ceeb/87ceeb?text=', // Left (Negative X)
+  'https://placehold.co/1024x1024/87ceeb/87ceeb?text=', // Top (Positive Y)
+  'https://placehold.co/1024x1024/87ceeb/87ceeb?text=', // Bottom (Negative Y)
+  'https://placehold.co/1024x1024/87ceeb/87ceeb?text=', // Front (Positive Z)
+  'https://placehold.co/1024x1024/87ceeb/87ceeb?text='  // Back (Negative Z)
+];
+
+
+        // --- Shader Definitions ---
+        // Simple Water Shader (Vertex)
+        const waterVertexShader = `
+            uniform float time;
+            varying vec2 vUv;
+            varying vec3 vWorldPosition; // Pass world position to fragment shader
+
+            void main() {
+                vUv = uv;
+                vec3 pos = position;
+                // Simple wave effect - adjust amplitude and frequency as needed
+                float waveFactor = sin(pos.x * 0.2 + time * 1.0) * cos(pos.z * 0.2 + time * 0.8) * 0.1; // Reduced amplitude
+                pos.y += waveFactor;
+                vec4 modelViewPosition = modelViewMatrix * vec4(pos, 1.0);
+                gl_Position = projectionMatrix * modelViewPosition;
+                vWorldPosition = (modelMatrix * vec4(pos, 1.0)).xyz; // Calculate world position
+            }
+        `;
+
+        // Simple Water Shader (Fragment)
+        const waterFragmentShader = `
+            uniform sampler2D tDiffuse; // Base color texture (optional)
+            uniform samplerCube envMap; // Environment map for reflections
+            uniform float time;
+            uniform vec3 waterColor;
+            uniform float opacity;
+            uniform vec3 cameraPos; // Camera position in world space
+            varying vec2 vUv;
+            varying vec3 vWorldPosition; // Received from vertex shader
+
+            void main() {
+                vec3 viewDirection = normalize(vWorldPosition - cameraPos);
+                vec3 worldNormal = vec3(0.0, 1.0, 0.0); // Assuming flat water for simple reflection
+                vec3 reflectVec = reflect(viewDirection, worldNormal);
+
+                // Sample environment map for reflection
+                // Add a small bias to the reflection vector to avoid artifacts at grazing angles
+                float reflectBias = 0.01;
+                vec4 envColor = textureCube(envMap, reflectVec + worldNormal * reflectBias);
+
+
+                // Basic Fresnel effect approximation for transparency/reflection mix
+                float fresnel = 0.02 + 0.98 * pow(1.0 - dot(-viewDirection, worldNormal), 5.0); // Schlick's approximation
+
+                // Combine base water color with reflection
+                vec3 finalColor = mix(waterColor, envColor.rgb, fresnel);
+
+                // Add some subtle distortion/variation (optional)
+                // float noise = (sin(vUv.x * 10.0 + time) + cos(vUv.y * 10.0 + time)) * 0.01;
+                // finalColor += noise;
+
+                gl_FragColor = vec4(finalColor, opacity);
+            }
+        `;
+
+
+        // --- Initialization ---
+        init();
+        // animate() is called implicitly by requestAnimationFrame after init
+
+        function init() {
+            clock = new THREE.Clock();
+
+            // --- Scene Setup ---
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // Fallback background color
+            scene.fog = new THREE.Fog(0x87CEEB, 50, 150); // Add fog for atmosphere
+
+            // --- Camera Setup ---
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, playerHeight + waterLevel + 5, 15); // Start above water level
+
+            // --- Renderer Setup ---
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true; // Enable shadows
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping; // Improve lighting realism
+            renderer.toneMappingExposure = 1.0;
+            document.body.appendChild(renderer.domElement);
+
+            // --- Controls (Pointer Lock for FPV) ---
+            controls = new PointerLockControls(camera, document.body);
+            scene.add(controls.getObject()); // Add camera rig to scene
+
+            // Event listeners for pointer lock
+            infoElement.addEventListener('click', () => {
+                if (!controls.isLocked) { // Only lock if not already locked
+                    controls.lock();
+                }
+            });
+            controls.addEventListener('lock', () => {
+                infoElement.style.display = 'none';
+            });
+            controls.addEventListener('unlock', () => {
+                infoElement.style.display = 'block';
+            });
+
+            // Keyboard controls
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+
+            // --- Lighting ---
+            // Ambient light for overall illumination
+            const ambientLight = new THREE.AmbientLight(0x607080, 0.8); // Soft ambient light
+            scene.add(ambientLight);
+
+            // Directional light (Sun)
+            sunLight = new THREE.DirectionalLight(0xffffff, 3.0); // Increased intensity
+            sunLight.position.set(50, 70, 30);
+            sunLight.castShadow = true;
+            // Configure shadow properties for better quality
+            sunLight.shadow.mapSize.width = 2048;
+            sunLight.shadow.mapSize.height = 2048;
+            sunLight.shadow.camera.near = 0.5;
+            sunLight.shadow.camera.far = 200;
+            sunLight.shadow.camera.left = -islandSize * 1.5;
+            sunLight.shadow.camera.right = islandSize * 1.5;
+            sunLight.shadow.camera.top = islandSize * 1.5;
+            sunLight.shadow.camera.bottom = -islandSize * 1.5;
+            scene.add(sunLight);
+            scene.add(sunLight.target); // Target for the light
+
+            // Point light (e.g., on a house or lighthouse)
+            pointLight = new THREE.PointLight(0xffaa00, 50, 30); // Color, Intensity, Distance
+            pointLight.position.set(-5, waterLevel + 5, -5); // Initial position, will be updated when house loads
+            pointLight.castShadow = true;
+            pointLight.visible = true; // Initially visible
+            scene.add(pointLight);
+            // Optional: Add a helper to visualize the point light
+            // const pointLightHelper = new THREE.PointLightHelper(pointLight, 1);
+            // scene.add(pointLightHelper);
+
+
+            // --- Skybox ---
+            try {
+                const skyboxTexture = cubeTextureLoader.load(skyboxTextureURLs, () => {
+                     scene.background = skyboxTexture;
+                     scene.environment = skyboxTexture; // Use for reflections
+                     console.log("Skybox loaded.");
+                     // Ensure water shader gets the env map if it loads after the skybox
+                     if (water && water.material.uniforms.envMap) {
+                         water.material.uniforms.envMap.value = scene.environment;
+                         water.material.needsUpdate = true;
+                     }
+                }, undefined, (error) => {
+                    console.error("Error loading skybox:", error);
+                    scene.background = new THREE.Color(0x87CEEB); // Fallback color
+                });
+            } catch (error) {
+                 console.error("Failed to initiate skybox loading:", error);
+                 scene.background = new THREE.Color(0x87CEEB); // Fallback color
+            }
+
+            // --- Terrain (Programmatic) ---
+            const islandGeometry = new THREE.PlaneGeometry(islandSize * 2, islandSize * 2, 100, 100);
+            islandGeometry.rotateX(-Math.PI / 2); // Rotate plane to be horizontal
+            const positionAttribute = islandGeometry.getAttribute('position');
+            const vertex = new THREE.Vector3();
+            for (let i = 0; i < positionAttribute.count; i++) { // Displace vertices for terrain height
+                vertex.fromBufferAttribute(positionAttribute, i);
+                const dist = Math.sqrt(vertex.x * vertex.x + vertex.z * vertex.z);
+                const scale = Math.max(0, 1.0 - dist / (islandSize * 0.9)); // Fade height towards edges
+                const height = (Math.sin(vertex.x * 0.15 + vertex.z * 0.1) + Math.cos(vertex.z * 0.15 + vertex.x * 0.05)) * 2.5 * scale; // Slightly more complex noise
+                vertex.y = Math.max(waterLevel - 0.3, height); // Ensure island base is slightly below water
+                positionAttribute.setY(i, vertex.y);
+            }
+            islandGeometry.computeVertexNormals(); // Recalculate normals after displacement
+
+            const sandTexture = textureLoader.load(sandTextureURL);
+            sandTexture.wrapS = THREE.RepeatWrapping;
+            sandTexture.wrapT = THREE.RepeatWrapping;
+            sandTexture.repeat.set(8, 8); // Adjust texture tiling
+            const islandMaterial = new THREE.MeshStandardMaterial({
+                map: sandTexture,
+                roughness: 0.8,
+                metalness: 0.1,
+            });
+            const island = new THREE.Mesh(islandGeometry, islandMaterial);
+            island.receiveShadow = true; // Allow island to receive shadows
+            island.position.y = 0;
+            scene.add(island);
+            objects.push(island);
+
+
+            // --- Water (Programmatic with Shader) ---
+            const waterGeometry = new THREE.PlaneGeometry(islandSize * 3, islandSize * 3, 50, 50); // Larger plane for water
+            waterGeometry.rotateX(-Math.PI / 2);
+            const waterMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0.0 },
+                    waterColor: { value: new THREE.Color(0x005a9c) }, // Deep blue color
+                    opacity: { value: 0.85 }, // Adjust for translucency
+                    envMap: { value: scene.environment || null }, // Use skybox for reflections (handle if skybox not loaded yet)
+                    cameraPos: { value: camera.position } // Pass camera position
+                },
+                vertexShader: waterVertexShader,
+                fragmentShader: waterFragmentShader,
+                transparent: true,
+                side: THREE.DoubleSide, // Render both sides
+            });
+            water = new THREE.Mesh(waterGeometry, waterMaterial);
+            water.position.y = waterLevel; // Set water level
+            water.receiveShadow = false; // Shadows on transparent water can look strange
+            scene.add(water);
+
+
+            // --- Programmatic Elements ---
+            // Example: Rocks
+            const rockTexture = textureLoader.load(rockTextureURL);
+            const rockMaterial = new THREE.MeshStandardMaterial({ map: rockTexture, roughness: 0.9, metalness: 0.1 });
+            for (let i = 0; i < 15; i++) { // Add several rocks
+                const radius = Math.random() * 1.5 + 0.5; // Random size
+                const rockGeometry = new THREE.SphereGeometry(radius, 16, 12);
+                const rockPosAttr = rockGeometry.getAttribute('position'); // Deform rocks slightly
+                for(let j=0; j<rockPosAttr.count; ++j) {
+                    const vert = new THREE.Vector3().fromBufferAttribute(rockPosAttr, j);
+                    vert.multiplyScalar(1.0 + (Math.random() - 0.5) * 0.3);
+                    rockPosAttr.setXYZ(j, vert.x, vert.y, vert.z);
+                }
+                rockGeometry.computeVertexNormals();
+                const rock = new THREE.Mesh(rockGeometry, rockMaterial);
+                const angle = Math.random() * Math.PI * 2; // Place rocks randomly
+                const dist = Math.random() * (islandSize * 0.7) + (islandSize * 0.1);
+                rock.position.set( Math.cos(angle) * dist, waterLevel + radius * 0.5, Math.sin(angle) * dist );
+                rock.position.y = Math.max(waterLevel + radius * 0.2, Math.random() * 3 + waterLevel); // Simplified placement
+                rock.castShadow = true;
+                rock.receiveShadow = true;
+                scene.add(rock);
+                objects.push(rock);
+            }
+
+            // Example: Simple Pier (Programmatic)
+            const woodTexture = textureLoader.load(woodTextureURL);
+            woodTexture.wrapS = THREE.RepeatWrapping;
+            woodTexture.wrapT = THREE.RepeatWrapping;
+            woodTexture.repeat.set(1, 5);
+            const pierMaterial = new THREE.MeshStandardMaterial({ map: woodTexture, roughness: 0.7, metalness: 0 });
+            const pierPlankGeo = new THREE.BoxGeometry(1, 0.2, 10);
+            const pier = new THREE.Mesh(pierPlankGeo, pierMaterial);
+            pier.position.set(islandSize * 0.5, waterLevel + 0.3, 0); // Position near edge
+            pier.castShadow = true;
+            pier.receiveShadow = true;
+            scene.add(pier);
+            objects.push(pier);
+
+
+            // --- Imported Models ---
+            // Boat (Imported) - Now uses boatGroup for movement/rocking
+            boatGroup = new THREE.Group(); // Create group for the boat
+            boatGroup.position.copy(boatInitialPosition); // Set group's initial position
+            scene.add(boatGroup);
+
+            gltfLoader.load(boatModelURL, (gltf) => {
+                const boat = gltf.scene;
+                boat.scale.set(1.5, 1.5, 1.5); // Adjust scale as needed
+                // boat.position is now relative to the boatGroup (set to 0,0,0)
+                boat.rotation.y = Math.PI / 2; // Rotate to face movement direction (along Z axis)
+
+                boat.traverse((child) => { // Ensure shadows
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                    }
+                });
+
+                boatGroup.add(boat); // Add loaded boat model to the group
+                objects.push(boatGroup); // Add group for potential interaction
+                console.log("Boat model loaded.");
+
+                // --- Animation Setup (Example: Rocking Boat) ---
+                if (gltf.animations && gltf.animations.length) {
+                    // If model has animations, play them relative to the boat object within the group
+                    mixer = new THREE.AnimationMixer(boat); // Animate the boat object itself
+                    const action = mixer.clipAction(gltf.animations[0]);
+                    action.play();
+                    console.log("Boat animation started.");
+                    // Still allow programmatic rocking/movement of the group
+                    boatGroup.userData.isRocking = true;
+                } else {
+                    // Flag for programmatic rocking animation applied to the group
+                    boatGroup.userData.isRocking = true;
+                }
+
+            }, undefined, (error) => {
+                console.error('Error loading boat model:', error);
+                // Add a placeholder cube to the group if loading fails
+                const placeholderGeo = new THREE.BoxGeometry(5, 1, 2);
+                const placeholderMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+                const placeholder = new THREE.Mesh(placeholderGeo, placeholderMat);
+                // placeholder position is relative to group (0,0,0)
+                boatGroup.add(placeholder); // Add placeholder to the group
+                boatGroup.userData.isRocking = true; // Still animate the placeholder
+            });
+
+            // Tree (Imported)
+            gltfLoader.load(treeModelURL, (gltf) => {
+                const tree = gltf.scene;
+                tree.scale.set(3, 3, 3); // Adjust scale
+                tree.position.set(-islandSize * 0.3, waterLevel + 2, -islandSize * 0.2); // Adjust Y based on terrain height (needs better check)
+                tree.traverse((child) => { if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; } });
+                scene.add(tree);
+                objects.push(tree);
+                console.log("Tree model loaded.");
+            }, undefined, (error) => {
+                console.error('Error loading tree model:', error); // Placeholder
+                const trunkGeo = new THREE.CylinderGeometry(0.3, 0.5, 4);
+                const leavesGeo = new THREE.SphereGeometry(2);
+                const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+                const leavesMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+                const trunk = new THREE.Mesh(trunkGeo, trunkMat); trunk.castShadow = true;
+                const leaves = new THREE.Mesh(leavesGeo, leavesMat); leaves.castShadow = true;
+                trunk.position.set(-islandSize * 0.3, waterLevel + 2, -islandSize * 0.2);
+                leaves.position.set(-islandSize * 0.3, waterLevel + 5, -islandSize * 0.2);
+                scene.add(trunk); scene.add(leaves);
+            });
+
+            // House (Imported - previously 'building')
+            gltfLoader.load(houseModelURL, (gltf) => {
+                const house = gltf.scene;
+                house.scale.set(2, 2, 2); // Adjust scale
+                house.position.set(islandSize * 0.1, waterLevel + 1, -islandSize * 0.4); // Adjust Y based on terrain
+                house.rotation.y = -Math.PI / 6;
+                pointLight.position.set(house.position.x, house.position.y + 3, house.position.z); // Move point light relative to house
+                house.traverse((child) => { if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; } });
+                scene.add(house);
+                objects.push(house);
+                console.log("House model loaded.");
+            }, undefined, (error) => {
+                console.error('Error loading house model:', error); // Placeholder
+                const houseGeo = new THREE.BoxGeometry(4, 5, 4);
+                const houseMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
+                const placeholder = new THREE.Mesh(houseGeo, houseMat); placeholder.castShadow = true;
+                placeholder.position.set(islandSize * 0.1, waterLevel + 2.5, -islandSize * 0.4);
+                pointLight.position.set(placeholder.position.x, placeholder.position.y + 3, placeholder.position.z); // Move light relative to placeholder
+                scene.add(placeholder);
+            });
+
+            // --- Loading Manager ---
+            loadingManager.onStart = (url, itemsLoaded, itemsTotal) => {
+                loadingElement.style.display = 'block';
+                loadingElement.textContent = `Loading: ${itemsLoaded} / ${itemsTotal}`;
+            };
+            loadingManager.onLoad = () => {
+                loadingElement.style.display = 'none';
+                if (water && scene.environment) { // Ensure water gets env map if loaded
+                    water.material.uniforms.envMap.value = scene.environment;
+                    water.material.needsUpdate = true;
+                }
+                animate(); // Start the animation loop *after* everything is loaded
+            };
+            loadingManager.onProgress = (url, itemsLoaded, itemsTotal) => {
+                 loadingElement.textContent = `Loading: ${itemsLoaded} / ${itemsTotal}`;
+            };
+            loadingManager.onError = (url) => {
+                console.error('There was an error loading ' + url);
+                // Maybe hide loading element after a delay on error
+                // setTimeout(() => { loadingElement.style.display = 'none'; }, 1000);
+            };
+
+            // --- Handle Window Resize ---
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // --- Event Handlers ---
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'KeyL': pointLight.visible = !pointLight.visible; break; // Toggle light
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate); // Keep the loop going
+
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            // Update FPV Controls movement
+            if (controls.isLocked === true) {
+                velocity.x -= velocity.x * 10.0 * delta; // Damping
+                velocity.z -= velocity.z * 10.0 * delta;
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize(); // Ensure consistent movement speed
+                if (moveForward || moveBackward) velocity.z -= direction.z * 40.0 * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * 40.0 * delta;
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+                // Simple collision avoidance with water level
+                controls.getObject().position.y = Math.max(controls.getObject().position.y, waterLevel + playerHeight);
+            }
+
+             // --- Update Animations ---
+            // 1. Water shader time uniform
+            if (water) {
+                water.material.uniforms.time.value = time;
+                water.material.uniforms.cameraPos.value.copy(camera.position); // Update camera pos for reflections
+            }
+
+            // 2. Boat Animation (Movement + Rocking)
+            if (boatGroup && boatGroup.userData.isRocking) {
+                // Programmatic Rocking (applied to the group)
+                boatGroup.rotation.z = Math.sin(time * 1.5) * 0.03; // Rock side to side
+                boatGroup.rotation.x = Math.cos(time * 1.0) * 0.02; // Rock front to back
+                boatGroup.position.y = boatInitialPosition.y + Math.sin(time * 1.2) * 0.05; // Bob up and down
+
+                // Programmatic Movement (applied to the group)
+                // Move back and forth along the Z axis relative to initial position
+                boatGroup.position.z = boatInitialPosition.z + Math.sin(time * 0.3) * boatMovementRange; // Adjust speed (0.3) and range
+                // Optional: Make boat face direction of movement (more complex)
+                // let moveDirection = Math.cos(time * 0.3); // Derivative of sin gives direction (-1 to 1)
+                // boatGroup.rotation.y = moveDirection < 0 ? Math.PI * 1.5 : Math.PI * 0.5 ; // Face +Z or -Z
+
+                // If the boat model itself had animations, update its mixer
+                if (mixer) {
+                    mixer.update(delta);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+    </script>
+</body>
+</html>
